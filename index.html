@@ -176,11 +176,29 @@
     return fc.features||[];
   }
   function fitToLots(){
-    if(!areaLayer || !areaLayer.getLayers().length) return false;
-    try{
-      map.fitBounds(areaLayer.getBounds(),{padding:[36,36],maxZoom:16});
-      return true;
-    }catch(e){ return false; }
+    const layers=(areaLayer && areaLayer.getLayers())||[];
+    if(!layers.length) return false;
+    const centers=[];
+    layers.forEach(l=>{
+      try{
+        const b=l.getBounds();
+        if(b && b.isValid()) centers.push(b.getCenter());
+      }catch(e){}
+    });
+    if(!centers.length) return false;
+    const lats=centers.map(c=>c.lat).sort((a,b)=>a-b);
+    const lngs=centers.map(c=>c.lng).sort((a,b)=>a-b);
+    const lat=lats[Math.floor(lats.length/2)];
+    const lng=lngs[Math.floor(lngs.length/2)];
+    const local=centers.filter(c=>Math.abs(c.lat-lat)<0.05 && Math.abs(c.lng-lng)<0.05);
+    const use=local.length?local:centers;
+    const south=Math.min.apply(null,use.map(c=>c.lat));
+    const north=Math.max.apply(null,use.map(c=>c.lat));
+    const west=Math.min.apply(null,use.map(c=>c.lng));
+    const east=Math.max.apply(null,use.map(c=>c.lng));
+    try{ map.fitBounds([[south,west],[north,east]],{padding:[28,28],maxZoom:16}); }catch(e){}
+    if(!map.getZoom() || map.getZoom()<15) map.setView([lat,lng],15);
+    return true;
   }
   function drawArea(feats, reset){
     if(reset){
@@ -200,8 +218,15 @@
     if(!areaLayer){ areaLayer=L.featureGroup().addTo(map); }
     layerNew.eachLayer(l=>areaLayer.addLayer(l));
   }
-  async function fetchAreaBatch(apns, env){
-    const where="PARCEL_APN IN ("+apns.map(a=>"'"+a+"'").join(",")+")";
+  function cityWhere(jur){
+    const q=geocodeQuery(jur||"");
+    if(!q || /county/i.test(jur) || /county/i.test(q)) return "";
+    const token=q.replace(/'/g,"").toUpperCase();
+    if(token.length<3) return "";
+    return " AND UPPER(SITE_CITY) LIKE '%"+token+"%'";
+  }
+  async function fetchAreaBatch(apns, env, jur){
+    const where="PARCEL_APN IN ("+apns.map(a=>"'"+a+"'").join(",")+")"+cityWhere(jur);
     return queryGisPost({
       geometry:env, geometryType:"esriGeometryEnvelope", inSR:"4326",
       spatialRel:"esriSpatialRelIntersects", where:where,
@@ -234,7 +259,7 @@
       while(next<chunks.length && id===areaLoadId){
         const idx=next++;
         let feats=[];
-        try{ feats=await fetchAreaBatch(chunks[idx], env); }catch(e){
+        try{ feats=await fetchAreaBatch(chunks[idx], env, jur); }catch(e){
           setStatus("GIS error loading lots in "+jur+": "+(e && e.message || e));
           continue;
         }

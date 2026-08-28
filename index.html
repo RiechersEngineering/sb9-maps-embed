@@ -68,7 +68,7 @@
   let areaMode = false;
   let areaLoadId = 0;
   const areaCache = {};
-  const areaStyle = { color:"#145c2b", weight:1, fillColor:"#2f9e44", fillOpacity:0.28 };
+  const areaStyle = { color:"#145c2b", weight:2, fillColor:"#2f9e44", fillOpacity:0.45 };
 
   function setStatus(t){ $("status").textContent = t; }
   function norm(s){ return (s||"").toUpperCase().replace(/[^A-Z0-9]+/g," ").trim(); }
@@ -233,7 +233,7 @@
       outFields:"PARCEL_APN,SITE_ADDR,SITE_CITY",
       returnGeometry:"true", outSR:"4326", f:"geojson",
       resultRecordCount:String(apns.length),
-      geometryPrecision:"5", maxAllowableOffset:"0.0004"
+      geometryPrecision:"6"
     });
   }
   async function loadAreaLots(jur, bounds){
@@ -343,7 +343,7 @@
     const base={
       outFields:"PARCEL_APN,SITE_ADDR,SITE_CITY",
       returnGeometry:"true", outSR:"4326", f:"geojson",
-      resultRecordCount:"5", geometryPrecision:"5", maxAllowableOffset:"0.0001"
+      resultRecordCount:"5", geometryPrecision:"6"
     };
     let feats=[];
     const place=geocodeQuery(p.j||"") || (p.y||"");

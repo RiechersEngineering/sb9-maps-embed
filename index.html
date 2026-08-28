@@ -94,12 +94,64 @@
     });
   }
 
+  const CA_CENTER = [37.2, -119.5];
+  const CA_ZOOM = 6;
+  const jurCache = {};
+
   async function geocode(q){
     const url="https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/findAddressCandidates?"+new URLSearchParams({f:"json",singleLine:q.includes(", CA")?q:q+", California",maxLocations:"1"});
     const r=await fetch(url); const j=await r.json();
     const c=(j.candidates||[])[0];
     if(!c||!c.location) return null;
     return [c.location.y, c.location.x];
+  }
+
+  function geocodeQuery(j){
+    let s = (j||"").replace(/\(.*?\)/g," ");
+    s = s.replace(/[_-]+/g," ");
+    s = s.replace(/^(CITY OF|COUNTY OF|AB1033)\s+/i,"");
+    s = s.replace(/\b(MOVED|CHECKED|NEW|OLD|DUPLICATE|IMPORTANT|ON HOLD|COMBINED|COPIED|PART 2|FLOOR-MST|FLOOR MST|WITHIN C|SPECIAL PROJECT|VACANT PARCELS|FIRE AFFECTED AREAS|FIRESEPTIC|UNICORP|LISTS?|LIST|MAILED|ADDRESS|SHEET\d+)\b/ig," ");
+    s = s.replace(/[^A-Za-z ]+/g," ").replace(/\s+/g," ").trim();
+    if(/county/i.test(j) && !/county/i.test(s)) s = (s+" County").trim();
+    return s;
+  }
+  function isStatewideExtent(ext){
+    if(!ext) return true;
+    return (ext.xmax-ext.xmin) > 8 || (ext.ymax-ext.ymin) > 8;
+  }
+  async function boundsForJurisdiction(name){
+    if(!name) return null;
+    if(Object.prototype.hasOwnProperty.call(jurCache, name)) return jurCache[name];
+    const q = geocodeQuery(name);
+    if(!q){ jurCache[name]=null; return null; }
+    const url="https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/findAddressCandidates?"+new URLSearchParams({
+      f:"json", singleLine:q+", California", maxLocations:"1", sourceCountry:"USA"
+    });
+    const r=await fetch(url); const j=await r.json();
+    const c=(j.candidates||[])[0];
+    if(!c || !c.extent || isStatewideExtent(c.extent)){ jurCache[name]=null; return null; }
+    jurCache[name]=[[c.extent.ymin,c.extent.xmin],[c.extent.ymax,c.extent.xmax]];
+    return jurCache[name];
+  }
+  async function onJurChange(){
+    $("q").value="";
+    $("suggest").hidden=true;
+    const name=$("jur").value;
+    const n=filtered().length;
+    if(!name){
+      map.setView(CA_CENTER, CA_ZOOM);
+      setStatus(parcels.length.toLocaleString()+" eligible lots statewide. Search an address or APN to light up a lot.");
+      return;
+    }
+    setStatus("Zooming to "+name+"…");
+    let b=null;
+    try{ b=await boundsForJurisdiction(name); }catch(e){ b=null; }
+    if(b){
+      map.fitBounds(b,{padding:[28,28],maxZoom:13});
+      setStatus(n.toLocaleString()+" lots in this filter. Search to light one up.");
+    } else {
+      setStatus(n.toLocaleString()+" lots in this filter. Could not find that area. Search a lot to zoom.");
+    }
   }
   function showMiss(q, latlng){
     if(miss) map.removeLayer(miss);
@@ -171,7 +223,7 @@
   }
   $("form").addEventListener("submit", onSearch);
   $("q").addEventListener("input", ()=>renderSuggest(matches($("q").value)));
-  $("jur").addEventListener("change", ()=>{ $("q").value=""; $("suggest").hidden=true; setStatus(filtered().length.toLocaleString()+" lots in this filter. Search to light one up."); });
+  $("jur").addEventListener("change", onJurChange);
   document.addEventListener("click", e=>{ if(!$("suggest").contains(e.target) && e.target!==$("q")) $("suggest").hidden=true; });
   load().catch(e=>setStatus("Failed to load: "+e.message));
   </script>

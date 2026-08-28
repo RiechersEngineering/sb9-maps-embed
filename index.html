@@ -164,8 +164,8 @@
     const seen=new Set();
     const out=[];
     pool.forEach(p=>{
-      const d=digits(p.a);
-      if(d && !seen.has(d)){ seen.add(d); out.push(d); }
+      const raw=(p.a||"").replace(/'/g,"").trim();
+      if(raw && !seen.has(raw)){ seen.add(raw); out.push(raw); }
     });
     return out;
   }
@@ -260,8 +260,7 @@
       return;
     }
     map.fitBounds(b,{padding:[28,28],maxZoom:13});
-    await new Promise(r=>setTimeout(r,80));
-    await loadAreaLots(jur, map.getBounds());
+    await loadAreaLots(jur, L.latLngBounds(b));
   }
   async function onJurChange(){
     $("q").value="";

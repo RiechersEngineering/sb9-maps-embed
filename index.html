@@ -175,6 +175,13 @@
     const fc=await r.json();
     return fc.features||[];
   }
+  function fitToLots(){
+    if(!areaLayer || !areaLayer.getLayers().length) return false;
+    try{
+      map.fitBounds(areaLayer.getBounds(),{padding:[36,36],maxZoom:16});
+      return true;
+    }catch(e){ return false; }
+  }
   function drawArea(feats, reset){
     if(reset){
       if(areaLayer){ map.removeLayer(areaLayer); areaLayer=null; }
@@ -211,7 +218,8 @@
     if(!apns.length){ setStatus("No eligible lots in that filter."); return; }
     if(areaCache[jur] && areaCache[jur].length){
       drawArea(areaCache[jur], true);
-      setStatus(areaCache[jur].length.toLocaleString()+" eligible lots in "+jur+".");
+      fitToLots();
+      setStatus(areaCache[jur].length.toLocaleString()+" eligible lots painted in "+jur+".");
       return;
     }
     const sw=bounds.getSouthWest(), ne=bounds.getNorthEast();
@@ -226,19 +234,28 @@
       while(next<chunks.length && id===areaLoadId){
         const idx=next++;
         let feats=[];
-        try{ feats=await fetchAreaBatch(chunks[idx], env); }catch(e){ feats=[]; }
+        try{ feats=await fetchAreaBatch(chunks[idx], env); }catch(e){
+          setStatus("GIS error loading lots in "+jur+": "+(e && e.message || e));
+          continue;
+        }
         if(id!==areaLoadId) return;
         if(feats.length){
           got.push.apply(got, feats);
           drawArea(feats, false);
+          if(got.length===feats.length) fitToLots();
           setStatus("Lighting "+got.length.toLocaleString()+" of "+apns.length.toLocaleString()+" eligible lots in "+jur+"…");
         }
       }
     }
     await Promise.all(Array.from({length:workers}, worker));
     if(id!==areaLoadId) return;
+    if(!got.length){
+      setStatus("0 lots painted in "+jur+" (list has "+apns.length.toLocaleString()+"). GIS returned no geometry.");
+      return;
+    }
     areaCache[jur]=got;
-    setStatus(got.length.toLocaleString()+" eligible lots in "+jur+" (of "+apns.length.toLocaleString()+" on the list).");
+    fitToLots();
+    setStatus(got.length.toLocaleString()+" lots painted in "+jur+" (of "+apns.length.toLocaleString()+" on the list).");
   }
   async function enterArea(jur){
     clearLot();

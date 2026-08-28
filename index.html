@@ -39,12 +39,12 @@
 <body>
   <div class="bar">
     <h1>SB9 Eligible Map</h1>
-    <p>Staff and preferred partners · statewide · search a lot to light it up · no owner mailing list</p>
+    <p>Staff and preferred partners · pick a city to light eligible lots · search an address for one lot</p>
   </div>
   <div class="search">
     <form id="form" autocomplete="off">
       <select id="jur" aria-label="Jurisdiction"><option value="">All jurisdictions</option></select>
-      <input id="q" type="search" placeholder="Search an address or APN" enterkeyhint="search" />
+      <input id="q" type="search" placeholder="City or area, or an address / APN" enterkeyhint="search" />
       <button type="submit">Search</button>
     </form>
     <ul id="suggest" hidden></ul>
@@ -63,7 +63,12 @@
   const style = { color:"#145c2b", weight:2, fillColor:"#2f9e44", fillOpacity:0.45 };
   let parcels = [];
   let layer = null;
+  let areaLayer = null;
   let miss = null;
+  let areaMode = false;
+  let areaLoadId = 0;
+  const areaCache = {};
+  const areaStyle = { color:"#145c2b", weight:1, fillColor:"#2f9e44", fillOpacity:0.28 };
 
   function setStatus(t){ $("status").textContent = t; }
   function norm(s){ return (s||"").toUpperCase().replace(/[^A-Z0-9]+/g," ").trim(); }
@@ -134,25 +139,134 @@
     jurCache[name]=[[c.extent.ymin,c.extent.xmin],[c.extent.ymax,c.extent.xmax]];
     return jurCache[name];
   }
+  function digits(a){ return (a||"").replace(/\D/g,""); }
+  function looksSpecific(q){ return /\d/.test(q||""); }
+  function findJurisdiction(q){
+    const n=norm(q); if(!n) return "";
+    const jurs=[...new Set(parcels.map(p=>p.j).filter(Boolean))];
+    const exact=jurs.find(j=>norm(j)===n || norm(geocodeQuery(j))===n);
+    if(exact) return exact;
+    const hits=jurs.filter(j=>norm(j).includes(n) || norm(geocodeQuery(j)).includes(n) || n.includes(norm(geocodeQuery(j))));
+    hits.sort((a,b)=>a.length-b.length);
+    return hits[0]||"";
+  }
+  function clearLot(){
+    if(layer){ map.removeLayer(layer); layer=null; }
+    if(miss){ map.removeLayer(miss); miss=null; }
+  }
+  function clearArea(){
+    areaLoadId++;
+    areaMode=false;
+    if(areaLayer){ map.removeLayer(areaLayer); areaLayer=null; }
+  }
+  function eligibleApns(jur){
+    const pool=jur ? parcels.filter(p=>p.j===jur) : [];
+    const seen=new Set();
+    const out=[];
+    pool.forEach(p=>{
+      const d=digits(p.a);
+      if(d && !seen.has(d)){ seen.add(d); out.push(d); }
+    });
+    return out;
+  }
+  async function queryGisPost(params){
+    const r=await fetch(GIS,{method:"POST", headers:{"Content-Type":"application/x-www-form-urlencoded"}, body:new URLSearchParams(params)});
+    if(!r.ok) throw new Error("gis");
+    const fc=await r.json();
+    return fc.features||[];
+  }
+  function drawArea(feats, reset){
+    if(reset){
+      if(areaLayer){ map.removeLayer(areaLayer); areaLayer=null; }
+    }
+    if(!feats.length) return;
+    const layerNew=L.geoJSON({type:"FeatureCollection", features:feats},{
+      style: areaStyle,
+      onEachFeature: (feat, lyr)=>{
+        lyr.on("click", ()=>{
+          const apn=(feat.properties||{}).PARCEL_APN;
+          const p=filtered().find(x=>digits(x.a)===digits(apn)) || parcels.find(x=>digits(x.a)===digits(apn));
+          if(p) selectParcel(p);
+        });
+      }
+    });
+    if(!areaLayer){ areaLayer=L.featureGroup().addTo(map); }
+    layerNew.eachLayer(l=>areaLayer.addLayer(l));
+  }
+  async function fetchAreaBatch(apns, env){
+    const where="PARCEL_APN IN ("+apns.map(a=>"'"+a+"'").join(",")+")";
+    return queryGisPost({
+      geometry:env, geometryType:"esriGeometryEnvelope", inSR:"4326",
+      spatialRel:"esriSpatialRelIntersects", where:where,
+      outFields:"PARCEL_APN,SITE_ADDR,SITE_CITY",
+      returnGeometry:"true", outSR:"4326", f:"geojson",
+      resultRecordCount:String(apns.length),
+      geometryPrecision:"5", maxAllowableOffset:"0.0004"
+    });
+  }
+  async function loadAreaLots(jur, bounds){
+    const id=++areaLoadId;
+    areaMode=true;
+    const apns=eligibleApns(jur);
+    if(!apns.length){ setStatus("No eligible lots in that filter."); return; }
+    if(areaCache[jur] && areaCache[jur].length){
+      drawArea(areaCache[jur], true);
+      setStatus(areaCache[jur].length.toLocaleString()+" eligible lots in "+jur+".");
+      return;
+    }
+    const sw=bounds.getSouthWest(), ne=bounds.getNorthEast();
+    const env=sw.lng+","+sw.lat+","+ne.lng+","+ne.lat;
+    const size=180;
+    const chunks=[];
+    for(let i=0;i<apns.length;i+=size) chunks.push(apns.slice(i,i+size));
+    const got=[];
+    const workers=4;
+    let next=0;
+    async function worker(){
+      while(next<chunks.length && id===areaLoadId){
+        const idx=next++;
+        let feats=[];
+        try{ feats=await fetchAreaBatch(chunks[idx], env); }catch(e){ feats=[]; }
+        if(id!==areaLoadId) return;
+        if(feats.length){
+          got.push.apply(got, feats);
+          drawArea(feats, false);
+          setStatus("Lighting "+got.length.toLocaleString()+" of "+apns.length.toLocaleString()+" eligible lots in "+jur+"…");
+        }
+      }
+    }
+    await Promise.all(Array.from({length:workers}, worker));
+    if(id!==areaLoadId) return;
+    areaCache[jur]=got;
+    setStatus(got.length.toLocaleString()+" eligible lots in "+jur+" (of "+apns.length.toLocaleString()+" on the list).");
+  }
+  async function enterArea(jur){
+    clearLot();
+    closeCard();
+    $("suggest").hidden=true;
+    if(!jur){
+      clearArea();
+      map.setView(CA_CENTER, CA_ZOOM);
+      setStatus(parcels.length.toLocaleString()+" eligible lots statewide. Pick a city to light lots, or search an address.");
+      return;
+    }
+    $("jur").value=jur;
+    const n=filtered().length;
+    setStatus("Zooming to "+jur+"…");
+    let b=null;
+    try{ b=await boundsForJurisdiction(jur); }catch(e){ b=null; }
+    if(!b){
+      setStatus(n.toLocaleString()+" lots in this filter. Could not find that area. Search a lot to zoom.");
+      return;
+    }
+    map.fitBounds(b,{padding:[28,28],maxZoom:13});
+    await new Promise(r=>setTimeout(r,80));
+    await loadAreaLots(jur, map.getBounds());
+  }
   async function onJurChange(){
     $("q").value="";
     $("suggest").hidden=true;
-    const name=$("jur").value;
-    const n=filtered().length;
-    if(!name){
-      map.setView(CA_CENTER, CA_ZOOM);
-      setStatus(parcels.length.toLocaleString()+" eligible lots statewide. Search an address or APN to light up a lot.");
-      return;
-    }
-    setStatus("Zooming to "+name+"…");
-    let b=null;
-    try{ b=await boundsForJurisdiction(name); }catch(e){ b=null; }
-    if(b){
-      map.fitBounds(b,{padding:[28,28],maxZoom:13});
-      setStatus(n.toLocaleString()+" lots in this filter. Search to light one up.");
-    } else {
-      setStatus(n.toLocaleString()+" lots in this filter. Could not find that area. Search a lot to zoom.");
-    }
+    await enterArea($("jur").value);
   }
   function showMiss(q, latlng){
     if(miss) map.removeLayer(miss);
@@ -216,6 +330,7 @@
   }
 
   async function selectParcel(p){
+    clearArea();
     setStatus("Fetching lot line for APN "+p.a+"…");
     if(layer){ map.removeLayer(layer); layer=null; }
     if(miss){ map.removeLayer(miss); miss=null; }
@@ -238,8 +353,14 @@
   async function onSearch(ev){
     if(ev) ev.preventDefault();
     const q=$("q").value.trim(); if(!q) return;
-    const hits=matches(q);
     $("suggest").hidden=true;
+    if(!looksSpecific(q)){
+      const jur=findJurisdiction(q);
+      if(jur){ await enterArea(jur); return; }
+      setStatus("No matching city on the list. Pick a jurisdiction or search a street / APN.");
+      return;
+    }
+    const hits=matches(q);
     if(hits.length){ selectParcel(hits[0]); return; }
     setStatus("Not on the sheet. Geocoding the miss…");
     try{ const g=await geocode(q); showMiss(q,g); }catch(e){ showMiss(q,null); }
@@ -254,7 +375,7 @@
     const jurs=[...new Set(parcels.map(p=>p.j).filter(Boolean))].sort();
     const sel=$("jur");
     jurs.forEach(j=>{ const o=document.createElement("option"); o.value=j; o.textContent=j+" ("+parcels.filter(p=>p.j===j).length+")"; sel.appendChild(o); });
-    setStatus(parcels.length.toLocaleString()+" eligible lots statewide. Search an address or APN to light up a lot.");
+    setStatus(parcels.length.toLocaleString()+" eligible lots statewide. Pick a city to light lots, or search an address.");
     setTimeout(()=>map.invalidateSize(),200);
   }
   $("form").addEventListener("submit", onSearch);

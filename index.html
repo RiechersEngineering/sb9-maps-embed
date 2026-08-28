@@ -67,8 +67,8 @@
   let miss = null;
   let areaMode = false;
   let areaLoadId = 0;
+  const GEOM_VER = "g3";
   const areaCache = {};
-  const areaStyle = { color:"#145c2b", weight:2, fillColor:"#2f9e44", fillOpacity:0.45 };
 
   function setStatus(t){ $("status").textContent = t; }
   function norm(s){ return (s||"").toUpperCase().replace(/[^A-Z0-9]+/g," ").trim(); }
@@ -206,7 +206,7 @@
     }
     if(!feats.length) return;
     const layerNew=L.geoJSON({type:"FeatureCollection", features:feats},{
-      style: areaStyle,
+      style: style,
       onEachFeature: (feat, lyr)=>{
         lyr.on("click", ()=>{
           const apn=(feat.properties||{}).PARCEL_APN;
@@ -232,8 +232,7 @@
       spatialRel:"esriSpatialRelIntersects", where:where,
       outFields:"PARCEL_APN,SITE_ADDR,SITE_CITY",
       returnGeometry:"true", outSR:"4326", f:"geojson",
-      resultRecordCount:String(apns.length),
-      geometryPrecision:"6"
+      resultRecordCount:String(apns.length)
     });
   }
   async function loadAreaLots(jur, bounds){
@@ -241,10 +240,11 @@
     areaMode=true;
     const apns=eligibleApns(jur);
     if(!apns.length){ setStatus("No eligible lots in that filter."); return; }
-    if(areaCache[jur] && areaCache[jur].length){
-      drawArea(areaCache[jur], true);
+    const cacheKey=GEOM_VER+"|"+jur;
+    if(areaCache[cacheKey] && areaCache[cacheKey].length){
+      drawArea(areaCache[cacheKey], true);
       fitToLots();
-      setStatus(areaCache[jur].length.toLocaleString()+" eligible lots painted in "+jur+".");
+      setStatus(areaCache[cacheKey].length.toLocaleString()+" eligible lots painted in "+jur+".");
       return;
     }
     const sw=bounds.getSouthWest(), ne=bounds.getNorthEast();
@@ -278,7 +278,7 @@
       setStatus("0 lots painted in "+jur+" (list has "+apns.length.toLocaleString()+"). GIS returned no geometry.");
       return;
     }
-    areaCache[jur]=got;
+    areaCache[cacheKey]=got;
     fitToLots();
     setStatus(got.length.toLocaleString()+" lots painted in "+jur+" (of "+apns.length.toLocaleString()+" on the list).");
   }
@@ -317,7 +317,7 @@
   }
 
   const geomCache = {};
-  function geomKey(p){ return (p.a||"")+"|"+(p.d||"")+"|"+(p.j||""); }
+  function geomKey(p){ return GEOM_VER+"|"+(p.a||"")+"|"+(p.d||"")+"|"+(p.j||""); }
   function pickFeat(feats, p){
     if(!feats.length) return null;
     const hint=norm(cityHint(p));
@@ -343,7 +343,7 @@
     const base={
       outFields:"PARCEL_APN,SITE_ADDR,SITE_CITY",
       returnGeometry:"true", outSR:"4326", f:"geojson",
-      resultRecordCount:"5", geometryPrecision:"6"
+      resultRecordCount:"5"
     };
     let feats=[];
     const place=geocodeQuery(p.j||"") || (p.y||"");

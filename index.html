@@ -92,6 +92,7 @@
     ul.querySelectorAll("li").forEach(li => {
       li.onclick = () => { const p=parcels[+li.dataset.i]; $("q").value=p.d||p.a; ul.hidden=true; selectParcel(p); };
     });
+    if(items[0]) fetchGeom(items[0]).catch(()=>{});
   }
 
   const CA_CENTER = [37.2, -119.5];
@@ -160,14 +161,9 @@
     $("x").onclick=closeCard;
   }
 
-  async function fetchGeom(p){
-    const apn=(p.a||"").replace(/'/g,"");
-    const where="PARCEL_APN='"+apn+"'";
-    const url=GIS+"?"+new URLSearchParams({where,outFields:"PARCEL_APN,SITE_ADDR,SITE_CITY",returnGeometry:"true",outSR:"4326",f:"geojson"});
-    const r=await fetch(url);
-    if(!r.ok) throw new Error("gis");
-    const fc=await r.json();
-    const feats=fc.features||[];
+  const geomCache = {};
+  function geomKey(p){ return (p.a||"")+"|"+(p.d||"")+"|"+(p.j||""); }
+  function pickFeat(feats, p){
     if(!feats.length) return null;
     const hint=norm(cityHint(p));
     const addr=norm(p.d);
@@ -177,6 +173,46 @@
       return ((hint && ca.includes(hint)?0:1)+(addr && aa.includes(addr)?0:1)) - ((hint && cb.includes(hint)?0:1)+(addr && ba.includes(addr)?0:1));
     });
     return feats[0];
+  }
+  async function queryGis(params){
+    const url=GIS+"?"+new URLSearchParams(params);
+    const r=await fetch(url);
+    if(!r.ok) throw new Error("gis");
+    const fc=await r.json();
+    return fc.features||[];
+  }
+  async function fetchGeom(p){
+    const key=geomKey(p);
+    if(Object.prototype.hasOwnProperty.call(geomCache, key)) return geomCache[key];
+    const apn=(p.a||"").replace(/'/g,"");
+    const base={
+      outFields:"PARCEL_APN,SITE_ADDR,SITE_CITY",
+      returnGeometry:"true", outSR:"4326", f:"geojson",
+      resultRecordCount:"5", geometryPrecision:"5", maxAllowableOffset:"0.0001"
+    };
+    let feats=[];
+    const place=geocodeQuery(p.j||"") || (p.y||"");
+    const line=[p.d, place].filter(Boolean).join(", ");
+    if(line){
+      try{
+        const g=await geocode(line);
+        if(g){
+          const pad=0.002;
+          const env=(g[1]-pad)+","+(g[0]-pad)+","+(g[1]+pad)+","+(g[0]+pad);
+          feats=await queryGis(Object.assign({
+            geometry:env, geometryType:"esriGeometryEnvelope",
+            inSR:"4326", spatialRel:"esriSpatialRelIntersects",
+            where:"PARCEL_APN='"+apn+"'"
+          }, base));
+        }
+      }catch(e){ feats=[]; }
+    }
+    if(!feats.length){
+      feats=await queryGis(Object.assign({ where:"PARCEL_APN='"+apn+"'", resultRecordCount:"8" }, base));
+    }
+    const feat=pickFeat(feats, p);
+    geomCache[key]=feat;
+    return feat;
   }
 
   async function selectParcel(p){

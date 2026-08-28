@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="robots" content="noindex,nofollow" />
+  <title>SB9 Eligible Map · Riechers</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+  <style>
+    :root { --ink:#122017; --muted:#4d5c52; --green:#1f7a3a; --deep:#145c2b; --line:#d5ddd6; }
+    * { box-sizing: border-box; }
+    html, body { margin:0; height:100%; font-family:"Avenir Next","Segoe UI",Helvetica,Arial,sans-serif; color:var(--ink); background:#f4f7f4; }
+    .bar, .search, .status { background:#fff; border-bottom:1px solid var(--line); }
+    .bar { padding:10px 14px; }
+    .bar h1 { margin:0; font-size:18px; }
+    .bar p { margin:2px 0 0; font-size:12px; color:var(--muted); }
+    .search { padding:10px 14px; position:relative; }
+    form { display:flex; gap:8px; flex-wrap:wrap; }
+    select, input, button { font:inherit; padding:10px 12px; border-radius:10px; border:1px solid var(--line); }
+    input { flex:1; min-width:180px; }
+    button { background:var(--green); color:#fff; border:0; font-weight:600; cursor:pointer; }
+    button:hover { background:var(--deep); }
+    #suggest { list-style:none; margin:6px 0 0; padding:0; background:#fff; border:1px solid var(--line); border-radius:10px; max-height:240px; overflow:auto; position:absolute; left:14px; right:14px; z-index:5000; }
+    #suggest li { padding:10px 12px; cursor:pointer; border-bottom:1px solid var(--line); }
+    #suggest li:hover, #suggest li.active { background:#eef6ef; }
+    #map { height:calc(100% - 148px); min-height:420px; }
+    .status { border-top:1px solid var(--line); border-bottom:0; padding:6px 14px; font-size:12px; color:var(--muted); }
+    #card { position:absolute; z-index:4000; background:#fff; border-radius:14px; box-shadow:0 10px 30px rgba(18,32,23,.12); padding:14px 16px; max-width:400px; left:14px; right:14px; bottom:48px; }
+    @media (min-width:720px){ #card { left:auto; right:18px; top:140px; bottom:auto; width:360px; } }
+    #card h2 { margin:0 0 6px; font-size:18px; }
+    #card .meta { color:var(--muted); font-size:13px; margin:0 0 10px; }
+    #card .foot { font-size:12px; color:var(--muted); margin:10px 0 0; }
+    .row { display:flex; gap:8px; }
+    .row button { margin:0; }
+    .ghost { background:#fff; color:var(--ink); border:1px solid var(--line); }
+    .miss { border-left:4px solid #c4a35a; }
+  </style>
+</head>
+<body>
+  <div class="bar">
+    <h1>SB9 Eligible Map</h1>
+    <p>Staff and preferred partners · statewide · search a lot to light it up · no owner mailing list</p>
+  </div>
+  <div class="search">
+    <form id="form" autocomplete="off">
+      <select id="jur" aria-label="Jurisdiction"><option value="">All jurisdictions</option></select>
+      <input id="q" type="search" placeholder="Search an address or APN" enterkeyhint="search" />
+      <button type="submit">Search</button>
+    </form>
+    <ul id="suggest" hidden></ul>
+  </div>
+  <div id="map"></div>
+  <aside id="card" hidden></aside>
+  <p id="status" class="status">Loading statewide list…</p>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+  <script>
+  const GIS = "https://services2.arcgis.com/zr3KAIbsRSUyARHG/arcgis/rest/services/CA_State_Parcels/FeatureServer/0/query";
+  const MISS = "Not on the eligible list. That is not a no. Send it to the desk.";
+  const FOOT = "This is a first-cut GIS list. Not a city approval.";
+  const $ = (id) => document.getElementById(id);
+  const map = L.map("map").setView([37.2, -119.5], 6);
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19, attribution: "&copy; OpenStreetMap" }).addTo(map);
+  const style = { color:"#145c2b", weight:2, fillColor:"#2f9e44", fillOpacity:0.45 };
+  let parcels = [];
+  let layer = null;
+  let miss = null;
+
+  function setStatus(t){ $("status").textContent = t; }
+  function norm(s){ return (s||"").toUpperCase().replace(/[^A-Z0-9]+/g," ").trim(); }
+  function cityHint(p){
+    const raw = (p.y || p.j || "").replace(/^(CITY OF|COUNTY OF|AB1033)\s+/i,"");
+    return norm(raw).split(" ")[0] ? raw.replace(/\(.*\)/g,"").replace(/MOVED|CHECKED|NEW|OLD|DUPLICATE|IMPORTANT|ON HOLD|COMBINED|COPIED|PART 2|FLOOR-MST|WITHIN C|SPECIAL PROJECT|VACANT PARCELS|FIRE AFFECTED AREAS|UNICORP/ig,"").trim() : "";
+  }
+  function showCard(html, missy){
+    const el=$("card"); el.hidden=false; el.className=missy?"miss":""; el.innerHTML=html;
+  }
+  function closeCard(){ $("card").hidden=true; $("card").innerHTML=""; }
+
+  function filtered(){
+    const j = $("jur").value;
+    return j ? parcels.filter(p => p.j===j) : parcels;
+  }
+  function matches(q){
+    const n = norm(q); if(!n) return [];
+    return filtered().filter(p => norm([p.d,p.a,p.j].join(" ")).includes(n)).slice(0,12);
+  }
+  function renderSuggest(items){
+    const ul=$("suggest");
+    if(!items.length){ ul.hidden=true; ul.innerHTML=""; return; }
+    ul.hidden=false;
+    ul.innerHTML = items.map((p,i)=>"<li data-i='"+parcels.indexOf(p)+"' class='"+(i===0?"active":"")+"'>"+(p.d||"(no address)")+" · "+p.a+" · "+p.j+"</li>").join("");
+    ul.querySelectorAll("li").forEach(li => {
+      li.onclick = () => { const p=parcels[+li.dataset.i]; $("q").value=p.d||p.a; ul.hidden=true; selectParcel(p); };
+    });
+  }
+
+  async function geocode(q){
+    const url="https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/findAddressCandidates?"+new URLSearchParams({f:"json",singleLine:q.includes(", CA")?q:q+", California",maxLocations:"1"});
+    const r=await fetch(url); const j=await r.json();
+    const c=(j.candidates||[])[0];
+    if(!c||!c.location) return null;
+    return [c.location.y, c.location.x];
+  }
+  function showMiss(q, latlng){
+    if(miss) map.removeLayer(miss);
+    if(latlng){ miss=L.circleMarker(latlng,{radius:8,color:"#7a6a32",fillColor:"#c4a35a",fillOpacity:0.9}).addTo(map); map.setView(latlng,16); }
+    showCard("<h2>"+q+"</h2><p class='meta'>"+MISS+"</p><div class='row'><button type='button' class='ghost' id='x'>Close</button></div><p class='foot'>"+FOOT+"</p>", true);
+    $("x").onclick=closeCard;
+  }
+
+  async function fetchGeom(p){
+    const apn=(p.a||"").replace(/'/g,"");
+    const where="PARCEL_APN='"+apn+"'";
+    const url=GIS+"?"+new URLSearchParams({where,outFields:"PARCEL_APN,SITE_ADDR,SITE_CITY",returnGeometry:"true",outSR:"4326",f:"geojson"});
+    const r=await fetch(url);
+    if(!r.ok) throw new Error("gis");
+    const fc=await r.json();
+    const feats=fc.features||[];
+    if(!feats.length) return null;
+    const hint=norm(cityHint(p));
+    const addr=norm(p.d);
+    feats.sort((A,B)=>{
+      const ca=norm(A.properties.SITE_CITY), cb=norm(B.properties.SITE_CITY);
+      const aa=norm(A.properties.SITE_ADDR), ba=norm(B.properties.SITE_ADDR);
+      return ((hint && ca.includes(hint)?0:1)+(addr && aa.includes(addr)?0:1)) - ((hint && cb.includes(hint)?0:1)+(addr && ba.includes(addr)?0:1));
+    });
+    return feats[0];
+  }
+
+  async function selectParcel(p){
+    setStatus("Fetching lot line for APN "+p.a+"…");
+    if(layer){ map.removeLayer(layer); layer=null; }
+    if(miss){ map.removeLayer(miss); miss=null; }
+    let feat=null;
+    try { feat=await fetchGeom(p); } catch(e){ feat=null; }
+    const street=(feat && feat.properties.SITE_ADDR) || p.d || "Address not on sheet";
+    const city=(feat && feat.properties.SITE_CITY) || p.y || p.j;
+    showCard("<h2>"+street+"</h2><p class='meta'>APN "+p.a+" · "+city+(p.c?(" · "+p.c):"")+"</p><div class='row'><button type='button' id='copy'>Copy address</button><button type='button' class='ghost' id='x'>Close</button></div>"+(feat?"":"<p class='foot'>No lot line returned for this APN.</p>")+"<p class='foot'>"+FOOT+"</p>");
+    $("copy").onclick=async()=>{ try{ await navigator.clipboard.writeText(street+", "+city+", CA"); }catch(e){} };
+    $("x").onclick=closeCard;
+    if(feat && feat.geometry){
+      layer=L.geoJSON(feat,{style}).addTo(map);
+      try{ map.fitBounds(layer.getBounds(),{maxZoom:18,padding:[40,40]}); }catch(e){}
+      setStatus("Lot line from CA_State_Parcels (APN + city).");
+    } else {
+      setStatus("Sheet match. Lot line not returned from the parcel layer.");
+    }
+  }
+
+  async function onSearch(ev){
+    if(ev) ev.preventDefault();
+    const q=$("q").value.trim(); if(!q) return;
+    const hits=matches(q);
+    $("suggest").hidden=true;
+    if(hits.length){ selectParcel(hits[0]); return; }
+    setStatus("Not on the sheet. Geocoding the miss…");
+    try{ const g=await geocode(q); showMiss(q,g); }catch(e){ showMiss(q,null); }
+    setStatus("");
+  }
+
+  async function load(){
+    const r=await fetch("data.json");
+    if(!r.ok) throw new Error("statewide list missing");
+    const data=await r.json();
+    parcels=data.parcels||[];
+    const jurs=[...new Set(parcels.map(p=>p.j).filter(Boolean))].sort();
+    const sel=$("jur");
+    jurs.forEach(j=>{ const o=document.createElement("option"); o.value=j; o.textContent=j+" ("+parcels.filter(p=>p.j===j).length+")"; sel.appendChild(o); });
+    setStatus(parcels.length.toLocaleString()+" eligible lots statewide. Search an address or APN to light up a lot.");
+    setTimeout(()=>map.invalidateSize(),200);
+  }
+  $("form").addEventListener("submit", onSearch);
+  $("q").addEventListener("input", ()=>renderSuggest(matches($("q").value)));
+  $("jur").addEventListener("change", ()=>{ $("q").value=""; $("suggest").hidden=true; setStatus(filtered().length.toLocaleString()+" lots in this filter. Search to light one up."); });
+  document.addEventListener("click", e=>{ if(!$("suggest").contains(e.target) && e.target!==$("q")) $("suggest").hidden=true; });
+  load().catch(e=>setStatus("Failed to load: "+e.message));
+  </script>
+</body>
+</html>

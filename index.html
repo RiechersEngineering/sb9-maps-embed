@@ -67,7 +67,7 @@
   let miss = null;
   let areaMode = false;
   let areaLoadId = 0;
-  const GEOM_VER = "g4";
+  const GEOM_VER = "g5";
   const areaCache = {};
 
   function setStatus(t){ $("status").textContent = t; }
@@ -159,22 +159,6 @@
     areaMode=false;
     if(areaLayer){ map.removeLayer(areaLayer); areaLayer=null; }
   }
-  function eligibleApns(jur){
-    const pool=jur ? parcels.filter(p=>p.j===jur) : [];
-    const seen=new Set();
-    const out=[];
-    pool.forEach(p=>{
-      const raw=(p.a||"").replace(/'/g,"").trim();
-      if(raw && !seen.has(raw)){ seen.add(raw); out.push(raw); }
-    });
-    return out;
-  }
-  async function queryGisPost(params){
-    const r=await fetch(GIS,{method:"POST", headers:{"Content-Type":"application/x-www-form-urlencoded"}, body:new URLSearchParams(params)});
-    if(!r.ok) throw new Error("gis");
-    const fc=await r.json();
-    return fc.features||[];
-  }
   function fitToLots(){
     const layers=(areaLayer && areaLayer.getLayers())||[];
     if(!layers.length) return false;
@@ -218,20 +202,11 @@
     if(!areaLayer){ areaLayer=L.featureGroup().addTo(map); }
     layerNew.eachLayer(l=>areaLayer.addLayer(l));
   }
-  async function fetchAreaBatch(apns){
-    const where="PARCEL_APN IN ("+apns.map(a=>"'"+a+"'").join(",")+")";
-    return queryGisPost({
-      where:where,
-      outFields:"PARCEL_APN,SITE_ADDR,SITE_CITY",
-      returnGeometry:"true", outSR:"4326", f:"geojson",
-      resultRecordCount:String(apns.length)
-    });
-  }
-  async function loadAreaLots(jur, bounds){
+  async function loadAreaLots(jur){
     const id=++areaLoadId;
     areaMode=true;
-    const apns=eligibleApns(jur);
-    if(!apns.length){ setStatus("No eligible lots in that filter."); return; }
+    const list=parcels.filter(p=>p.j===jur && (p.a||"").trim());
+    if(!list.length){ setStatus("No eligible lots in that filter."); return; }
     const cacheKey=GEOM_VER+"|"+jur;
     if(areaCache[cacheKey] && areaCache[cacheKey].length){
       drawArea(areaCache[cacheKey], true);
@@ -239,38 +214,33 @@
       setStatus(areaCache[cacheKey].length.toLocaleString()+" eligible lots painted in "+jur+".");
       return;
     }
-    const size=8;
-    const chunks=[];
-    for(let i=0;i<apns.length;i+=size) chunks.push(apns.slice(i,i+size));
+    setStatus("Loading lots in "+jur+"…");
     const got=[];
-    const workers=6;
+    const workers=10;
     let next=0;
     async function worker(){
-      while(next<chunks.length && id===areaLoadId){
-        const idx=next++;
-        let feats=[];
-        try{ feats=await fetchAreaBatch(chunks[idx]); }catch(e){
-          setStatus("GIS error loading lots in "+jur+": "+(e && e.message || e));
-          continue;
-        }
+      while(next<list.length && id===areaLoadId){
+        const p=list[next++];
+        let feat=null;
+        try{ feat=await fetchGeom(p); }catch(e){ feat=null; }
         if(id!==areaLoadId) return;
-        if(feats.length){
-          got.push.apply(got, feats);
-          drawArea(feats, false);
-          if(got.length===feats.length) fitToLots();
-          setStatus("Lighting "+got.length.toLocaleString()+" of "+apns.length.toLocaleString()+" eligible lots in "+jur+"…");
+        if(feat && feat.geometry){
+          got.push(feat);
+          drawArea([feat], false);
+          if(got.length===1) fitToLots();
+          setStatus("Lighting "+got.length.toLocaleString()+" of "+list.length.toLocaleString()+" eligible lots in "+jur+"…");
         }
       }
     }
     await Promise.all(Array.from({length:workers}, worker));
     if(id!==areaLoadId) return;
     if(!got.length){
-      setStatus("0 lots painted in "+jur+" (list has "+apns.length.toLocaleString()+"). GIS returned no geometry.");
+      setStatus("0 lots painted in "+jur+" (list has "+list.length.toLocaleString()+"). GIS returned no geometry.");
       return;
     }
     areaCache[cacheKey]=got;
     fitToLots();
-    setStatus(got.length.toLocaleString()+" lots painted in "+jur+" (of "+apns.length.toLocaleString()+" on the list).");
+    setStatus(got.length.toLocaleString()+" lots painted in "+jur+" (of "+list.length.toLocaleString()+" on the list).");
   }
   async function enterArea(jur){
     clearLot();
@@ -284,15 +254,13 @@
     }
     $("jur").value=jur;
     const n=filtered().length;
-    setStatus("Zooming to "+jur+"…");
+    setStatus("Loading lots in "+jur+"…");
+    const loadP=loadAreaLots(jur);
     let b=null;
     try{ b=await boundsForJurisdiction(jur); }catch(e){ b=null; }
-    if(!b){
-      setStatus(n.toLocaleString()+" lots in this filter. Could not find that area. Search a lot to zoom.");
-      return;
-    }
-    map.fitBounds(b,{padding:[28,28],maxZoom:13});
-    await loadAreaLots(jur, L.latLngBounds(b));
+    if(b) map.fitBounds(b,{padding:[28,28],maxZoom:13});
+    else setStatus(n.toLocaleString()+" lots in this filter. Could not find that area. Search a lot to zoom.");
+    await loadP;
   }
   async function onJurChange(){
     $("q").value="";
@@ -330,11 +298,25 @@
     const key=geomKey(p);
     if(Object.prototype.hasOwnProperty.call(geomCache, key)) return geomCache[key];
     const apn=(p.a||"").replace(/'/g,"");
-    const feats=await queryGis({
-      where:"PARCEL_APN='"+apn+"'",
-      outFields:"PARCEL_APN,SITE_ADDR,SITE_CITY",
-      returnGeometry:"true", outSR:"4326", f:"geojson"
-    });
+    const place=geocodeQuery(p.j||"") || (p.y||"");
+    const line=[p.d, place].filter(Boolean).join(", ");
+    let feats=[];
+    if(line){
+      try{
+        const g=await geocode(line);
+        if(g){
+          const pad=0.002;
+          const env=(g[1]-pad)+","+(g[0]-pad)+","+(g[1]+pad)+","+(g[0]+pad);
+          feats=await queryGis({
+            geometry:env, geometryType:"esriGeometryEnvelope",
+            inSR:"4326", spatialRel:"esriSpatialRelIntersects",
+            where:"PARCEL_APN='"+apn+"'",
+            outFields:"PARCEL_APN,SITE_ADDR,SITE_CITY",
+            returnGeometry:"true", outSR:"4326", f:"geojson"
+          });
+        }
+      }catch(e){ feats=[]; }
+    }
     const feat=pickFeat(feats, p);
     geomCache[key]=feat;
     return feat;

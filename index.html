@@ -34,6 +34,8 @@
     .row button { margin:0; }
     .ghost { background:#fff; color:var(--ink); border:1px solid var(--line); }
     .miss { border-left:4px solid #c4a35a; }
+    #card a.zillow { display:inline-block; padding:10px 12px; border-radius:10px; border:1px solid var(--line); background:#fff; color:var(--ink); text-decoration:none; font-weight:600; }
+    .leaflet-popup-content a { font-weight:600; }
   </style>
 </head>
 <body>
@@ -140,6 +142,11 @@
     return jurCache[name];
   }
   function digits(a){ return (a||"").replace(/\D/g,""); }
+  function esc(s){ return String(s||"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+  function zillowUrl(street, city){
+    const line=[street, city, "CA"].filter(Boolean).join(", ");
+    return "https://www.zillow.com/homes/"+encodeURIComponent(line)+"_rb/";
+  }
   function looksSpecific(q){ return /\d/.test(q||""); }
   function findJurisdiction(q){
     const n=norm(q); if(!n) return "";
@@ -192,11 +199,17 @@
     const layerNew=L.geoJSON({type:"FeatureCollection", features:feats},{
       style: style,
       onEachFeature: (feat, lyr)=>{
-        lyr.on("click", ()=>{
-          const apn=(feat.properties||{}).PARCEL_APN;
-          const p=filtered().find(x=>digits(x.a)===digits(apn)) || parcels.find(x=>digits(x.a)===digits(apn));
-          if(p) selectParcel(p);
-        });
+        const props=feat.properties||{};
+        const apn=props.PARCEL_APN;
+        const p=apn ? (filtered().find(x=>digits(x.a)===digits(apn)) || parcels.find(x=>digits(x.a)===digits(apn))) : null;
+        const street=props.SITE_ADDR || (p && p.d) || "Address not on sheet";
+        const city=props.SITE_CITY || (p && (p.y||p.j)) || "";
+        lyr.bindPopup(
+          "<strong>"+esc(street)+"</strong><br>"+
+          (city?esc(city)+", CA<br>":"")+
+          (apn?"APN "+esc(apn)+"<br>":"")+
+          "<a href=\""+zillowUrl(street, city)+"\" target=\"_blank\" rel=\"noopener\">Open in Zillow</a>"
+        );
       }
     });
     if(!areaLayer){ areaLayer=L.featureGroup().addTo(map); }
@@ -331,7 +344,7 @@
     try { feat=await fetchGeom(p); } catch(e){ feat=null; }
     const street=(feat && feat.properties.SITE_ADDR) || p.d || "Address not on sheet";
     const city=(feat && feat.properties.SITE_CITY) || p.y || p.j;
-    showCard("<h2>"+street+"</h2><p class='meta'>APN "+p.a+" · "+city+(p.c?(" · "+p.c):"")+"</p><div class='row'><button type='button' id='copy'>Copy address</button><button type='button' class='ghost' id='x'>Close</button></div>"+(feat?"":"<p class='foot'>No lot line returned for this APN.</p>")+"<p class='foot'>"+FOOT+"</p>");
+    showCard("<h2>"+street+"</h2><p class='meta'>APN "+p.a+" · "+city+(p.c?(" · "+p.c):"")+"</p><div class='row'><button type='button' id='copy'>Copy address</button><a class='zillow' href='"+zillowUrl(street, city)+"' target='_blank' rel='noopener'>Open in Zillow</a><button type='button' class='ghost' id='x'>Close</button></div>"+(feat?"":"<p class='foot'>No lot line returned for this APN.</p>")+"<p class='foot'>"+FOOT+"</p>");
     $("copy").onclick=async()=>{ try{ await navigator.clipboard.writeText(street+", "+city+", CA"); }catch(e){} };
     $("x").onclick=closeCard;
     if(feat && feat.geometry){

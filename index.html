@@ -157,7 +157,7 @@
     const dashed=d!==apn;
     if(!dashed && d.length>=9 && d.length<12) vals.push(d.padStart(12,"0"));
     if(dashed && d.length===9) vals.push(d+"000");
-    if(dashed && d.length>0 && d.length<12 && d.length!==9) vals.push(d.padStart(12,"0"));
+    if(dashed && d.length>=10 && d.length<12) vals.push(d.padStart(12,"0"));
     return [...new Set(vals)];
   }
   function apnWhere(raw){

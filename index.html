@@ -69,7 +69,7 @@
   let miss = null;
   let areaMode = false;
   let areaLoadId = 0;
-  const GEOM_VER = "g5";
+  const GEOM_VER = "g6";
   const areaCache = {};
 
   function setStatus(t){ $("status").textContent = t; }
@@ -142,6 +142,34 @@
     return jurCache[name];
   }
   function digits(a){ return (a||"").replace(/\D/g,""); }
+  // CA_State_Parcels PARCEL_APN is county-specific. Alameda/Oakland keep
+  // dashed assessor IDs (429-50-22). Napa (and some Napa Valley cities) store
+  // 12-digit zero-padded IDs (043050019000) while the sheet has 10–11 undashed
+  // digits or dashed book-page-parcel (052-431-013 → 052431013000). Query every
+  // plausible form; the ~200m envelope plus pickFeat keep the local lot.
+  function apnQueryValues(raw){
+    const apn=(raw||"").replace(/'/g,"").trim();
+    if(!apn) return [];
+    const vals=[apn];
+    const d=digits(apn);
+    if(!d) return vals;
+    if(d!==apn) vals.push(d);
+    const dashed=d!==apn;
+    if(!dashed && d.length>=9 && d.length<12) vals.push(d.padStart(12,"0"));
+    if(dashed && d.length===9) vals.push(d+"000");
+    if(dashed && d.length>0 && d.length<12 && d.length!==9) vals.push(d.padStart(12,"0"));
+    return [...new Set(vals)];
+  }
+  function apnWhere(raw){
+    return apnQueryValues(raw).map(a=>"PARCEL_APN='"+a+"'").join(" OR ");
+  }
+  function apnMatches(sheet, gis){
+    if(!sheet||!gis) return false;
+    if(apnQueryValues(sheet).includes(gis)) return true;
+    const a=digits(sheet).replace(/^0+/,"");
+    const b=digits(gis).replace(/^0+/,"");
+    return !!a && a===b;
+  }
   function esc(s){ return String(s||"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
   function zillowUrl(street, city){
     const line=[street, city, "CA"].filter(Boolean).join(", ");
@@ -201,7 +229,7 @@
       onEachFeature: (feat, lyr)=>{
         const props=feat.properties||{};
         const apn=props.PARCEL_APN;
-        const p=apn ? (filtered().find(x=>digits(x.a)===digits(apn)) || parcels.find(x=>digits(x.a)===digits(apn))) : null;
+        const p=apn ? (filtered().find(x=>apnMatches(x.a, apn)) || parcels.find(x=>apnMatches(x.a, apn))) : null;
         const street=props.SITE_ADDR || (p && p.d) || "Address not on sheet";
         const city=props.SITE_CITY || (p && (p.y||p.j)) || "";
         lyr.bindPopup(
@@ -291,12 +319,16 @@
   function geomKey(p){ return GEOM_VER+"|"+(p.a||"")+"|"+(p.d||"")+"|"+(p.j||""); }
   function pickFeat(feats, p){
     if(!feats.length) return null;
+    const cands=new Set(apnQueryValues(p.a));
     const hint=norm(cityHint(p));
     const addr=norm(p.d);
     feats.sort((A,B)=>{
-      const ca=norm(A.properties.SITE_CITY), cb=norm(B.properties.SITE_CITY);
-      const aa=norm(A.properties.SITE_ADDR), ba=norm(B.properties.SITE_ADDR);
-      return ((hint && ca.includes(hint)?0:1)+(addr && aa.includes(addr)?0:1)) - ((hint && cb.includes(hint)?0:1)+(addr && ba.includes(addr)?0:1));
+      const score=(f)=>{
+        const apn=f.properties.PARCEL_APN||"";
+        const ca=norm(f.properties.SITE_CITY), aa=norm(f.properties.SITE_ADDR);
+        return (cands.has(apn)?0:1)*4 + (hint && ca.includes(hint)?0:1)*2 + (addr && aa.includes(addr)?0:1);
+      };
+      return score(A)-score(B);
     });
     return feats[0];
   }
@@ -323,7 +355,7 @@
           feats=await queryGis({
             geometry:env, geometryType:"esriGeometryEnvelope",
             inSR:"4326", spatialRel:"esriSpatialRelIntersects",
-            where:"PARCEL_APN='"+apn+"'",
+            where:apnWhere(apn),
             outFields:"PARCEL_APN,SITE_ADDR,SITE_CITY",
             returnGeometry:"true", outSR:"4326", f:"geojson"
           });
